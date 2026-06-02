@@ -3,16 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 
 const JOB_TYPES = [
+  "General",
   "Demo",
   "Framing",
   "Electrical",
   "Plumbing",
-  "HVAC",
   "Drywall",
-  "Paint",
-  "Flooring",
-  "Trim",
-  "Final",
+  "Finishes",
+  "Exterior",
+  "Other",
 ] as const;
 
 type Status = "idle" | "loading" | "uploading" | "success" | "error";
