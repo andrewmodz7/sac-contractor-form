@@ -1,13 +1,16 @@
+import { Readable } from "stream";
 import { NextResponse } from "next/server";
+import Busboy from "busboy";
 import { findPropertyFolder, uploadFile } from "@/lib/drive";
 
-export const dynamic = "force-dynamic";
-// Large photo uploads can take a while; give the route room to run.
+export const runtime = "nodejs";
 export const maxDuration = 300;
+export const dynamic = "force-dynamic";
 
 /**
  * Build a base timestamp in US Eastern time formatted as
- * MM/DD/YYYY HH:MM:SS (24-hour).
+ * MM/DD/YYYY HH:MM:SS (24-hour). Uses Intl with an explicit timeZone so it is
+ * correct regardless of the server's timezone (Railway runs in UTC).
  */
 function easternTimestamp(): string {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -33,9 +36,8 @@ function easternTimestamp(): string {
 
 /** Derive a file extension from the filename, falling back to the mime type. */
 function getExtension(fileName: string, mimeType: string): string {
-  const fromName = fileName.includes(".")
-    ? fileName.split(".").pop()
-    : undefined;
+  const fromName =
+    fileName && fileName.includes(".") ? fileName.split(".").pop() : undefined;
   if (fromName) return fromName.toLowerCase();
 
   const fromMime = mimeType.split("/").pop();
@@ -43,68 +45,81 @@ function getExtension(fileName: string, mimeType: string): string {
 }
 
 export async function POST(request: Request) {
+  const contentType = request.headers.get("content-type") || "";
+  if (!contentType.includes("multipart/form-data") || !request.body) {
+    return NextResponse.json(
+      { error: "Invalid request. Please try again." },
+      { status: 400 }
+    );
+  }
+
+  // One base timestamp shared by every file in this submission.
+  const timestamp = easternTimestamp();
+
+  const fields: Record<string, string> = {};
+  // The folder lookup is kicked off as soon as the property field arrives so it
+  // is (almost always) resolved by the time the first file part streams in.
+  let folderPromise: Promise<string | null> | null = null;
+  let folderLookupErrorMessage: string | null = null;
+  let acceptedCount = 0;
+  const uploads: Promise<void>[] = [];
+
+  const bb = Busboy({ headers: { "content-type": contentType } });
+
+  const parsing = new Promise<void>((resolve, reject) => {
+    bb.on("field", (name, value) => {
+      fields[name] = value;
+      if (name === "property" && value.trim() && !folderPromise) {
+        folderPromise = findPropertyFolder(value).catch((err) => {
+          console.error("POST /api/submit folder lookup failed:", err);
+          const raw = err instanceof Error ? err.message : String(err);
+          folderLookupErrorMessage = /"Active"/.test(raw)
+            ? 'The "Active" folder could not be found. Please contact the administrator.'
+            : "Unable to verify the property right now. Please try again.";
+          return null;
+        });
+      }
+    });
+
+    bb.on("file", (_name, fileStream, info) => {
+      // The browser serializes FormData in append order (property, jobType,
+      // then files), so the fields above are already populated here.
+      const upload = (async () => {
+        const folderId = folderPromise ? await folderPromise : null;
+        if (!folderId) {
+          // No valid destination — discard this part so parsing can continue.
+          fileStream.resume();
+          return;
+        }
+
+        acceptedCount += 1;
+        const index = acceptedCount; // 1-based order among accepted files
+        const ext = getExtension(info.filename, info.mimeType);
+        const suffix = index === 1 ? "" : `-${index}`;
+        const name = `${fields.jobType} ${timestamp}${suffix}.${ext}`;
+        const mimeType = info.mimeType || "application/octet-stream";
+
+        // Pipe the file part straight to Drive — never fully buffered here.
+        await uploadFile(folderId, name, mimeType, fileStream);
+      })().catch((err) => {
+        // Surface the failure to the parse-level promise and stop reading.
+        fileStream.resume();
+        throw err;
+      });
+
+      uploads.push(upload);
+    });
+
+    bb.on("error", reject);
+    bb.on("close", resolve);
+  });
+
   try {
-    const formData = await request.formData();
-
-    const property = formData.get("property");
-    const jobType = formData.get("jobType");
-    const files = formData.getAll("files").filter((f): f is File => f instanceof File);
-
-    if (typeof property !== "string" || !property.trim()) {
-      return NextResponse.json(
-        { error: "Please choose a property." },
-        { status: 400 }
-      );
-    }
-    if (typeof jobType !== "string" || !jobType.trim()) {
-      return NextResponse.json(
-        { error: "Please choose a job type." },
-        { status: 400 }
-      );
-    }
-    if (files.length === 0) {
-      return NextResponse.json(
-        { error: "Please select at least one photo." },
-        { status: 400 }
-      );
-    }
-
-    let folderId: string | null;
-    try {
-      folderId = await findPropertyFolder(property);
-    } catch (err) {
-      console.error("POST /api/submit folder lookup failed:", err);
-      const message =
-        err instanceof Error && /"Active"/.test(err.message)
-          ? 'The "Active" folder could not be found. Please contact the administrator.'
-          : "Unable to verify the property right now. Please try again.";
-      return NextResponse.json({ error: message }, { status: 500 });
-    }
-
-    if (!folderId) {
-      return NextResponse.json(
-        {
-          error:
-            "This property is no longer accepting submissions, please refresh.",
-        },
-        { status: 410 }
-      );
-    }
-
-    const timestamp = easternTimestamp();
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const ext = getExtension(file.name, file.type);
-      const suffix = i === 0 ? "" : `-${i + 1}`;
-      const name = `${jobType} ${timestamp}${suffix}.${ext}`;
-      const mimeType = file.type || "application/octet-stream";
-      const buffer = Buffer.from(await file.arrayBuffer());
-
-      await uploadFile(folderId, name, mimeType, buffer);
-    }
-
-    return NextResponse.json({ count: files.length, property });
+    Readable.fromWeb(request.body as Parameters<typeof Readable.fromWeb>[0]).pipe(
+      bb
+    );
+    await parsing;
+    await Promise.all(uploads);
   } catch (err) {
     console.error("POST /api/submit failed:", err);
     return NextResponse.json(
@@ -112,4 +127,44 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
+
+  // Validation happens after parsing so we never buffer the body up front.
+  if (!fields.property || !fields.property.trim()) {
+    return NextResponse.json(
+      { error: "Please choose a property." },
+      { status: 400 }
+    );
+  }
+  if (!fields.jobType || !fields.jobType.trim()) {
+    return NextResponse.json(
+      { error: "Please choose a job type." },
+      { status: 400 }
+    );
+  }
+  if (folderLookupErrorMessage) {
+    return NextResponse.json(
+      { error: folderLookupErrorMessage },
+      { status: 500 }
+    );
+  }
+
+  const folderId = folderPromise ? await folderPromise : null;
+  if (!folderId) {
+    return NextResponse.json(
+      {
+        error:
+          "This property is no longer accepting submissions, please refresh.",
+      },
+      { status: 410 }
+    );
+  }
+
+  if (acceptedCount === 0) {
+    return NextResponse.json(
+      { error: "Please select at least one photo." },
+      { status: 400 }
+    );
+  }
+
+  return NextResponse.json({ count: acceptedCount, property: fields.property });
 }

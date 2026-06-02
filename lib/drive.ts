@@ -122,14 +122,15 @@ export async function findPropertyFolder(
 }
 
 /**
- * Upload a single file (provided as a Buffer) to the target folder with the
- * given name and mime type.
+ * Upload a single file to the target folder with the given name and mime type.
+ * The body is a readable stream so the file is piped straight through to the
+ * Drive API and never fully buffered in memory.
  */
 export async function uploadFile(
   folderId: string,
   name: string,
   mimeType: string,
-  buffer: Buffer
+  body: Readable
 ): Promise<void> {
   const drive = getDrive();
 
@@ -140,7 +141,7 @@ export async function uploadFile(
     },
     media: {
       mimeType,
-      body: Readable.from(buffer),
+      body,
     },
     fields: "id",
     supportsAllDrives: true,
