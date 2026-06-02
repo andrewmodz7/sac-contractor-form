@@ -96,6 +96,15 @@ Railway detects Next.js automatically — **no config files are needed**.
 3. Railway installs dependencies, runs `next build`, and starts the app.
 4. Railway **auto-deploys on every push to `main`**.
 
+> **Port binding:** the `start` script runs
+> `next start -H 0.0.0.0 -p ${PORT:-3000}`. The `-H 0.0.0.0` makes the server
+> listen on all interfaces (Next.js otherwise binds to localhost, which Railway's
+> proxy can't reach — that causes a 502 even though the server logs "Ready"), and
+> `-p ${PORT:-3000}` uses the `PORT` env var Railway injects (falling back to 3000
+> locally). Because the app reads `$PORT` itself, **no port configuration is
+> needed in the Railway dashboard** — leave the service's target port blank so
+> Railway auto-detects it.
+
 ## Project structure
 
 ```
