@@ -257,7 +257,6 @@ export default function Home() {
               id="photos"
               type="file"
               accept="image/*"
-              capture="environment"
               multiple
               disabled={status === "uploading"}
               onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
