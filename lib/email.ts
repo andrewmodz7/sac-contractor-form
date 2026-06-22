@@ -18,6 +18,11 @@ export async function sendUploadNotification(params: {
   count: number;
   /** Eastern time timestamp already computed by the route for filenames. */
   timestamp: string;
+  /**
+   * Optional CC recipient(s). Defaults to none, so the production submit route
+   * — which never sets this — sends to NOTIFY_TO_EMAIL only with no CC.
+   */
+  cc?: string | string[];
 }): Promise<void> {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
@@ -36,10 +41,11 @@ export async function sendUploadNotification(params: {
     auth: { user, pass },
   });
 
-  const { property, jobType, count, timestamp } = params;
+  const { property, jobType, count, timestamp, cc } = params;
 
   await transport.sendMail({
     to: NOTIFY_TO_EMAIL,
+    ...(cc ? { cc } : {}),
     from: user,
     subject: `New contractor upload: ${property} - ${jobType}`,
     text: `${count} photo(s) uploaded to ${property} (${jobType}) at ${timestamp} ET`,
