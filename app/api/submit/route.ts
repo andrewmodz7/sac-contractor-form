@@ -2,6 +2,7 @@ import { Readable } from "stream";
 import { NextResponse } from "next/server";
 import Busboy from "busboy";
 import { findPropertyFolder, uploadFile } from "@/lib/drive";
+import { sendUploadNotification } from "@/lib/email";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -164,6 +165,19 @@ export async function POST(request: Request) {
       { error: "Please select at least one photo." },
       { status: 400 }
     );
+  }
+
+  // Side effect only: notify Kenneth that a new batch arrived. A failure here
+  // must never fail the request — the upload already succeeded in Drive.
+  try {
+    await sendUploadNotification({
+      property: fields.property,
+      jobType: fields.jobType,
+      count: acceptedCount,
+      timestamp,
+    });
+  } catch (err) {
+    console.error("POST /api/submit notification email failed:", err);
   }
 
   return NextResponse.json({ count: acceptedCount, property: fields.property });
